@@ -2,8 +2,8 @@ name: YouTube Sentiment Ingest
 
 on:
   schedule:
-    - cron: '*/30 * * * *'  # every 30 minutes
-  workflow_dispatch:        # allow manual runs
+    - cron: '*/30 * * * *'
+  workflow_dispatch: {}
 
 jobs:
   run-ingest:
@@ -29,6 +29,49 @@ jobs:
         run: |
           source .venv/bin/activate
           python -m nltk.downloader vader_lexicon
+
+      # ---------- Diagnostics (safe) ----------
+      - name: Show which env vars are set (masked)
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          YT_API_KEY: ${{ secrets.YT_API_KEY }}
+          YT_VIDEO_ID: ${{ secrets.YT_VIDEO_ID }}
+        run: |
+          echo "Has SUPABASE_DB_URL? $([ -n \"$SUPABASE_DB_URL\" ] && echo yes || echo no)"
+          echo "Has YT_API_KEY?      $([ -n \"$YT_API_KEY\" ] && echo yes || echo no)"
+          echo "YT_VIDEO_ID value:   ${YT_VIDEO_ID}"
+
+      - name: DNS resolve DB host
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -e
+          host=$(python - <<'PY'
+import os
+u=os.environ['SUPABASE_DB_URL']
+print(u.split('@')[1].split(':')[0])
+PY
+)
+          echo "DB host: $host"
+          getent hosts "$host" || (echo "DNS resolution failed" && exit 1)
+
+      - name: Test DB connection
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          source .venv/bin/activate
+          python - <<'PY'
+import os, psycopg2
+try:
+    conn = psycopg2.connect(os.environ["SUPABASE_DB_URL"], connect_timeout=10, sslmode="require")
+    print("✅ DB connection OK")
+    conn.close()
+except Exception as e:
+    print("❌ DB connection failed:")
+    print(e)
+    raise
+PY
+      # ---------- End diagnostics ----------
 
       - name: Run ingest script
         env:
