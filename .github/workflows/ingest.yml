@@ -1,14 +1,13 @@
 name: YouTube Sentiment Ingest
 
 on:
+  workflow_dispatch: {}        # show the "Run workflow" button
   schedule:
-    - cron: '*/30 * * * *'
-  workflow_dispatch: {}
+    - cron: '*/30 * * * *'     # every 30 minutes
 
 jobs:
   run-ingest:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -18,7 +17,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install dependencies
+      - name: Install deps
         run: |
           python -m venv .venv
           source .venv/bin/activate
@@ -29,63 +28,6 @@ jobs:
         run: |
           source .venv/bin/activate
           python -m nltk.downloader vader_lexicon
-
-      - name: Check required secrets are present
-        env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-          YT_API_KEY: ${{ secrets.YT_API_KEY }}
-          YT_VIDEO_ID: ${{ secrets.YT_VIDEO_ID }}
-        run: |
-          set -e
-          [ -n "$SUPABASE_DB_URL" ] || (echo "❌ Missing SUPABASE_DB_URL"; exit 1)
-          [ -n "$YT_API_KEY" ]      || (echo "❌ Missing YT_API_KEY"; exit 1)
-          [ -n "$YT_VIDEO_ID" ]     || (echo "❌ Missing YT_VIDEO_ID"; exit 1)
-          echo "✅ Secrets present"
-
-      # ---- Diagnostics: DNS + Port reachability on 5432 (direct) ----
-      - name: DNS resolve DB host
-        env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: |
-          python - <<'PY'
-          import os, socket
-          u=os.environ['SUPABASE_DB_URL']
-          host=u.split('@')[1].split(':')[0]
-          print("DB host:", host)
-          print("IP:", socket.gethostbyname(host))
-          PY
-
-      - name: Check port 5432 connectivity
-        env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: |
-          sudo apt-get update -y >/dev/null
-          sudo apt-get install -y dnsutils netcat-openbsd >/dev/null
-          host=$(python - <<'PY'
-import os
-u=os.environ['SUPABASE_DB_URL']
-print(u.split('@')[1].split(':')[0])
-PY
-)
-          echo "Testing TCP to $host:5432"
-          nc -vz "$host" 5432
-      # ---- End diagnostics ----
-
-      - name: Test DB connection (30s timeout)
-        env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: |
-          source .venv/bin/activate
-          python - <<'PY'
-          import os, psycopg2
-          try:
-              conn = psycopg2.connect(os.environ["SUPABASE_DB_URL"], connect_timeout=30, sslmode="require")
-              print("✅ DB connection OK")
-              conn.close()
-          except Exception as e:
-              print("❌ DB connection failed:", e)
-              raise
-          PY
 
       - name: Run ingest script
         env:
