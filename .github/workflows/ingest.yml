@@ -1,9 +1,9 @@
 name: YouTube Sentiment Ingest
 
 on:
-  workflow_dispatch: {}        # show the "Run workflow" button
+  workflow_dispatch: {}
   schedule:
-    - cron: '*/30 * * * *'     # every 30 minutes
+    - cron: '*/30 * * * *'
 
 jobs:
   run-ingest:
@@ -29,11 +29,36 @@ jobs:
           source .venv/bin/activate
           python -m nltk.downloader vader_lexicon
 
-      - name: Run ingest script
+      - name: Show DB host
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          python - <<'PY'
+          import os
+          from urllib.parse import urlparse
+          u=os.environ['SUPABASE_DB_URL']
+          host=urlparse(u).hostname
+          print("DB host from secret:", host)
+          PY
+
+      # Force IPv4 by replacing hostname with its A-record (IPv4)
+      - name: Run ingest script (force IPv4)
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           YT_API_KEY: ${{ secrets.YT_API_KEY }}
           YT_VIDEO_ID: ${{ secrets.YT_VIDEO_ID }}
         run: |
           source .venv/bin/activate
+          export SUPABASE_DB_URL=$(python - <<'PY'
+          import os, socket
+          from urllib.parse import urlparse
+          u=os.environ['SUPABASE_DB_URL']
+          p=urlparse(u)
+          host = p.hostname
+          ipv4 = socket.gethostbyname(host)
+          print(u.replace(host, ipv4))
+          PY
+          )
+          echo "Using IPv4 DB URL:"
+          echo "$SUPABASE_DB_URL" | sed -E 's#://([^:@/]+):([^@]+)@#://\1:<hidden>@#'
           python scripts/ingest_to_supabase.py
