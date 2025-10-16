@@ -2,8 +2,8 @@ name: YouTube Sentiment Ingest
 
 on:
   schedule:
-    - cron: '*/30 * * * *'   # every 30 minutes
-  workflow_dispatch: {}       # allow manual runs
+    - cron: '*/30 * * * *'
+  workflow_dispatch: {}
 
 jobs:
   run-ingest:
@@ -30,7 +30,6 @@ jobs:
           source .venv/bin/activate
           python -m nltk.downloader vader_lexicon
 
-      # ---------- Diagnostics (safe & simple) ----------
       - name: Check required secrets are present
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
@@ -38,10 +37,12 @@ jobs:
           YT_VIDEO_ID: ${{ secrets.YT_VIDEO_ID }}
         run: |
           set -e
-          if [ -z "${SUPABASE_DB_URL}" ]; then echo "❌ Missing SUPABASE_DB_URL"; exit 1; else echo "✅ Has SUPABASE_DB_URL"; fi
-          if [ -z "${YT_API_KEY}" ]; then echo "❌ Missing YT_API_KEY"; exit 1; else echo "✅ Has YT_API_KEY"; fi
-          if [ -z "${YT_VIDEO_ID}" ]; then echo "❌ Missing YT_VIDEO_ID"; exit 1; else echo "✅ YT_VIDEO_ID=${YT_VIDEO_ID}"; fi
+          [ -n "$SUPABASE_DB_URL" ] || (echo "❌ Missing SUPABASE_DB_URL"; exit 1)
+          [ -n "$YT_API_KEY" ]      || (echo "❌ Missing YT_API_KEY"; exit 1)
+          [ -n "$YT_VIDEO_ID" ]     || (echo "❌ Missing YT_VIDEO_ID"; exit 1)
+          echo "✅ Secrets present"
 
+      # ---- Diagnostics: DNS + Port reachability on 5432 (direct) ----
       - name: DNS resolve DB host
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
@@ -54,7 +55,23 @@ jobs:
           print("IP:", socket.gethostbyname(host))
           PY
 
-      - name: Test DB connection
+      - name: Check port 5432 connectivity
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          sudo apt-get update -y >/dev/null
+          sudo apt-get install -y dnsutils netcat-openbsd >/dev/null
+          host=$(python - <<'PY'
+import os
+u=os.environ['SUPABASE_DB_URL']
+print(u.split('@')[1].split(':')[0])
+PY
+)
+          echo "Testing TCP to $host:5432"
+          nc -vz "$host" 5432
+      # ---- End diagnostics ----
+
+      - name: Test DB connection (30s timeout)
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
@@ -62,14 +79,13 @@ jobs:
           python - <<'PY'
           import os, psycopg2
           try:
-              conn = psycopg2.connect(os.environ["SUPABASE_DB_URL"], connect_timeout=10, sslmode="require")
+              conn = psycopg2.connect(os.environ["SUPABASE_DB_URL"], connect_timeout=30, sslmode="require")
               print("✅ DB connection OK")
               conn.close()
           except Exception as e:
               print("❌ DB connection failed:", e)
               raise
           PY
-      # ---------- End diagnostics ----------
 
       - name: Run ingest script
         env:
