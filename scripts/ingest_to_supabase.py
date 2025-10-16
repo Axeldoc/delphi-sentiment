@@ -1,102 +1,125 @@
-import os, requests, psycopg2
-from datetime import datetime, timezone
+import os
+import re
+import yaml
+import requests
+import psycopg2
+from datetime import datetime
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
-DB_URL     = os.environ.get("SUPABASE_DB_URL")
+DB_URL = os.environ.get("SUPABASE_DB_URL")
 YT_API_KEY = os.environ.get("YT_API_KEY")
-VIDEO_ID   = os.environ.get("YT_VIDEO_ID")
-GAME_SLUG  = "james-bond-first-light"
+VIDEO_ID = os.environ.get("YT_VIDEO_ID")
 
-def yt_comments(video_id, page_token=None):
-    url = 'https://www.googleapis.com/youtube/v3/commentThreads'
-    params = {'part':'snippet','videoId':video_id,'maxResults':100,'key':YT_API_KEY}
-    if page_token: params['pageToken'] = page_token
-    r = requests.get(url, params=params)
-    r.raise_for_status()
-    return r.json()
+# ---------- Load topic rules ----------
+def load_topics_map(path="config/topics.yml"):
+    try:
+        with open(path, "r") as f:
+            raw = yaml.safe_load(f) or {}
+        compiled = {}
+        for topic, kws in raw.items():
+            pats = [re.compile(rf"\b{re.escape(kw)}\\b", re.IGNORECASE) for kw in kws]
+            compiled[topic] = pats
+        return compiled
+    except FileNotFoundError:
+        return {}
 
-def upsert_game_and_source(cur):
-    cur.execute("""
-        insert into games (slug, title)
-        values (%s, %s)
-        on conflict (slug) do nothing
-        returning id
-    """, (GAME_SLUG, "James Bond: First Light"))
-    row = cur.fetchone()
-    if row is None:
-        cur.execute("select id from games where slug=%s", (GAME_SLUG,))
-        row = cur.fetchone()
-    game_id = row[0]
+TOPIC_PATTERNS = load_topics_map()
 
-    video_url = f"https://www.youtube.com/watch?v={VIDEO_ID}"
-    cur.execute("""
-        insert into sources (game_id, platform, url, external_id)
-        values (%s, 'youtube', %s, %s)
-        on conflict do nothing
-        returning id
-    """, (game_id, video_url, VIDEO_ID))
-    row = cur.fetchone()
-    if row is None:
-        cur.execute("select id from sources where game_id=%s and platform='youtube' and external_id=%s", (game_id, VIDEO_ID))
-        row = cur.fetchone()
-    source_id = row[0]
-    return game_id, source_id
+print("Loaded topics map:", {k: len(v) for k, v in TOPIC_PATTERNS.items()})
 
+def extract_topics(text: str):
+    """Return a list of topic names that appear in text."""
+    if not text:
+        return []
+    hits = []
+    for topic, patterns in TOPIC_PATTERNS.items():
+        if any(p.search(text) for p in patterns):
+            hits.append(topic)
+    return hits
+
+# ---------- YouTube API ----------
+def fetch_comments(video_id, page_token=None):
+    url = "https://www.googleapis.com/youtube/v3/commentThreads"
+    params = {
+        "part": "snippet",
+        "videoId": video_id,
+        "maxResults": 100,
+        "key": YT_API_KEY,
+    }
+    if page_token:
+        params["pageToken"] = page_token
+    resp = requests.get(url, params=params, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+# ---------- Main ----------
 def main():
     if not (DB_URL and YT_API_KEY and VIDEO_ID):
         print("❌ Missing one of: SUPABASE_DB_URL, YT_API_KEY, YT_VIDEO_ID")
         return
 
+    sia = SentimentIntensityAnalyzer()
     conn = psycopg2.connect(DB_URL, sslmode="require")
     conn.autocommit = True
     cur = conn.cursor()
-    sia = SentimentIntensityAnalyzer()
 
-    game_id, source_id = upsert_game_and_source(cur)
-
-    inserted, analyzed = 0, 0
+    count_comments = count_analyses = 0
     token = None
-    pages = 0
-    while True and pages < 5:  # ~500 comments max
-        data = yt_comments(VIDEO_ID, token)
-        for item in data.get('items', []):
-            s = item['snippet']['topLevelComment']['snippet']
-            text = s.get('textDisplay') or ""
-            author = s.get('authorDisplayName')
-            published = s.get('publishedAt')
-            published_at = datetime.fromisoformat(published.replace('Z','+00:00')) if published else None
-            ext_cid = item['snippet']['topLevelComment']['id']
 
-            # Insert comment (ignore if exists)
+    for _ in range(5):  # fetch up to ~500 comments
+        data = fetch_comments(VIDEO_ID, token)
+        for item in data.get("items", []):
+            snippet = item["snippet"]["topLevelComment"]["snippet"]
+            text = snippet.get("textDisplay", "")
+            author = snippet.get("authorDisplayName")
+            published_at = snippet.get("publishedAt")
+            comment_id = item["id"]
+
+            # sentiment
+            score = sia.polarity_scores(text)["compound"]
+            sentiment = "positive" if score > 0.2 else "negative" if score < -0.2 else "neutral"
+        
+        # topic extraction
+        topics = extract_topics(text) or None
+
+        if topics:
+            print("MATCH ->", topics, "|", text[:80].replace("\n", " ") + ("…" if len(text) > 80 else ""))
+
+
+
+            # insert comment
             cur.execute("""
-                insert into comments (source_id, external_comment_id, author, body, published_at)
-                values (%s,%s,%s,%s,%s)
-                on conflict (source_id, external_comment_id) do nothing
-                returning id
-            """, (source_id, ext_cid, author, text, published_at))
+                INSERT INTO comments (video_id, author, body, published_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
+                RETURNING id
+            """, (VIDEO_ID, author, text, published_at))
             row = cur.fetchone()
             if row is None:
-                cur.execute("select id from comments where source_id=%s and external_comment_id=%s", (source_id, ext_cid))
+                cur.execute("SELECT id FROM comments WHERE video_id=%s AND body=%s LIMIT 1", (VIDEO_ID, text))
                 row = cur.fetchone()
-            comment_id = row[0]
-            inserted += 1 if row else 0
+            cid = row[0]
+            count_comments += 1
 
-            # Analyze & store
-            score = sia.polarity_scores(text)['compound']
-            sentiment = 'positive' if score > 0.2 else 'negative' if score < -0.2 else 'neutral'
+            # insert/update analysis
             cur.execute("""
-                insert into analyses (comment_id, sentiment, sentiment_score, topics, last)
-                values (%s,%s,%s,%s,true)
-            """, (comment_id, sentiment, score, None))
-            analyzed += 1
+                INSERT INTO analyses (comment_id, sentiment, sentiment_score, topics, last)
+                VALUES (%s, %s, %s, %s, TRUE)
+                ON CONFLICT (comment_id) DO UPDATE
+                SET sentiment = EXCLUDED.sentiment,
+                    sentiment_score = EXCLUDED.sentiment_score,
+                    topics = EXCLUDED.topics,
+                    last = TRUE;
+            """, (cid, sentiment, score, topics))
+            count_analyses += 1
 
-        token = data.get('nextPageToken')
-        pages += 1
+        token = data.get("nextPageToken")
         if not token:
             break
 
-    cur.close(); conn.close()
-    print(f"✅ Upserted comments: {inserted}, analyses created: {analyzed}")
+    conn.close()
+    print(f"✅ Upserted comments: {count_comments}, analyses created: {count_analyses}")
 
 if __name__ == "__main__":
     main()
+

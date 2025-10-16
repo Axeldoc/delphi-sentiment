@@ -1,0 +1,74 @@
+story:
+  - story
+  - plot
+  - narrative
+  - character
+  - dialogue
+  - writing
+
+gameplay:
+  - gameplay
+  - mechanics
+  - controls
+  - combat
+  - stealth
+  - missions
+
+graphics:
+  - graphics
+  - visuals
+  - art
+  - lighting
+  - textures
+  - animation
+
+performance:
+  - performance
+  - fps
+  - frame rate
+  - lag
+  - stutter
+  - optimization
+  - bug
+  - glitch
+
+audio:
+  - audio
+  - sound
+  - soundtrack
+  - music
+  - voice acting
+  - sfx
+
+difficulty:
+  - difficulty
+  - hard
+  - easy
+  - challenging
+  - grind
+  - skill
+
+multiplayer:
+  - multiplayer
+  - coop
+  - co-op
+  - matchmaking
+  - ping
+  - server
+
+ui_ux:
+  - ui
+  - hud
+  - menu
+  - interface
+  - ux
+  - tutorial
+
+monetization:
+  - price
+  - monetization
+  - dlc
+  - microtransaction
+  - battle pass
+  - paywall
+
