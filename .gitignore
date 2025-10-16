@@ -1,0 +1,16 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Env / secrets
+.env
+.env.*
+.env.local
+
+# macOS
+.DS_Store
+
+# Node (future dashboard)
+node_modules/
+.next/
