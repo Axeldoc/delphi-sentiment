@@ -1,0 +1,40 @@
+name: YouTube Sentiment Ingest
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'  # every 30 minutes
+  workflow_dispatch:        # allow manual runs
+
+jobs:
+  run-ingest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install requests psycopg2-binary nltk pandas tqdm
+
+      - name: Download NLTK data
+        run: |
+          source .venv/bin/activate
+          python -m nltk.downloader vader_lexicon
+
+      - name: Run ingest script
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          YT_API_KEY: ${{ secrets.YT_API_KEY }}
+          YT_VIDEO_ID: ${{ secrets.YT_VIDEO_ID }}
+        run: |
+          source .venv/bin/activate
+          python scripts/ingest_to_supabase.py
